@@ -53,6 +53,10 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
         group_by: difference.old_path
         aggregate: change_count is count(distinct commit)
         top: 10
+        nest: commits_by_time_line_chart is {
+            group_by: file_commits.author_time_month
+            aggregate: change_count is file_commits.commit_count.sum()
+        }
     }
 
     nest: top_10_packages is {
