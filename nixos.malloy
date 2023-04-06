@@ -63,6 +63,7 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
         nest: top_3_commiters is {
             group_by: author.name
             aggregate: commit_count is count(distinct commit)
+            top: 3
         }
     }
 }
