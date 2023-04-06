@@ -1,41 +1,39 @@
-source: nixpkgs_files is table('bigquery-public-data.github_repos.files') {
-    where: repo_name = 'NixOS/nixpkgs'
-}
-
-sql: nixpkgs_commits_flattened_sql is {
-    select: """
-    SELECT
-    commit, 
-    difference_flattened,
-    repo_name_flattened,
-    ARRAY_LENGTH(parent) > 1 AS is_merge_commit
-    FROM `bigquery-public-data.github_repos.commits` commits
-    CROSS JOIN UNNEST(commits.repo_name) AS repo_name_flattened
-    CROSS JOIN UNNEST(commits.difference) AS difference_flattened
-    WHERE repo_name_flattened = 'NixOS/nixpkgs'
-    """
-}
-
-source: nixpkgs_commits_flattened is from_sql(nixpkgs_commits_flattened_sql) {
-}
-
-source: nixpkgs_commits is table('bigquery-public-data.github_repos.commits') {
+/**
+ * Create a BigQuery table that is the result of:
+ *   SELECT
+ *   *,
+ *   ARRAY_LENGTH(parent) > 1 AS is_merge_commit
+ *   FROM `bigquery-public-data.github_repos.commits` commits
+ *   WHERE 'NixOS/nixpkgs' IN UNNEST(repo_name) AND
+ *         EXTRACT(YEAR FROM TIMESTAMP_SECONDS(author.time_sec)) >= 2019
+ *
+ * This is to save on some cost to avoid scanning the whole table.
+ */
+source: nixpkgs_commits is table('malloydev.github_nixpkgs_commits_from_2019') {
     where: 
-        nixpkgs_commits_flattened.repo_name_flattened = 'NixOS/nixpkgs',
         // We do not want merge commits since that will double count the commiter
         // as the one who merged it.
         // This should only keep the PullRequest commit now.
-        not nixpkgs_commits_flattened.is_merge_commit        
-
-    join_many: 
-        nixpkgs_commits_flattened on nixpkgs_commits_flattened.commit = commit
+        not is_merge_commit        
     dimension:
         author_time is timestamp_seconds(author.time_sec)
         package is regexp_extract(subject, r'^([\w-]+):.+')
+       
+}
+
+source: author_package is from(nixpkgs_commits -> {
+    where: package != null
+    group_by: author.name, package
+    aggregate: commit_count is count(distinct commit)
+}) + {
+    dimension:
+        author_name is name
 }
 
 query: top10_commiters_dashboard is nixpkgs_commits -> {
-    where: year(author_time) > 2019
+    //TODO(fmzakari): this join_many shouldn't need to be here. File bug?
+    join_many: author_package on author_package.package = package
+    
     group_by: author.name
     aggregate: commit_count is count(distinct commit)
     top: 10
@@ -46,9 +44,15 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
     }
 
     nest: top_10_files is {
-        group_by: nixpkgs_commits_flattened.difference_flattened.old_path
+        group_by: difference.old_path
         aggregate: change_count is count(distinct commit)
         top: 10
+        nest: top_3_commiters is {
+          where: author.name != author_package.author_name
+          group_by: author_package.author_name
+          aggregate: change_count is author_package.commit_count.sum()
+          top: 3
+        }
     }
 
     nest: top_10_packages is {
@@ -56,5 +60,13 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
         group_by: package
         aggregate: change_count is count(distinct commit)
         top: 10
+
+        nest: top_3_commiters is {
+          where: author.name != author_package.author_name
+          group_by: author_package.author_name
+          aggregate: change_count is author_package.commit_count.sum()
+          top: 3
+        }
     }
+
 }
