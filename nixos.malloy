@@ -1,0 +1,51 @@
+source: nixpkgs_files is table('bigquery-public-data.github_repos.files') {
+    where: repo_name = 'NixOS/nixpkgs'
+}
+
+sql: repo_flattened_sql is {
+    select: """
+    SELECT
+    commit, 
+    repo_name_flattened
+    FROM `bigquery-public-data.github_repos.commits` commits
+    CROSS JOIN UNNEST(commits.repo_name) AS repo_name_flattened
+    WHERE repo_name_flattened = 'NixOS/nixpkgs'
+    """
+}
+
+source: repo_flattened is from_sql(repo_flattened_sql) {
+}
+
+source: nixpkgs_commits is table('bigquery-public-data.github_repos.commits') {
+    where: repo_flattened.repo_name_flattened = 'NixOS/nixpkgs'
+
+    join_many: 
+        repo_flattened on repo_flattened.commit = commit
+        nixpkgs_files on nixpkgs_files.repo_name = repo_flattened.repo_name_flattened
+    dimension:
+        author_time is timestamp_seconds(author.time_sec)
+}
+
+query: top_10_files is nixpkgs_commits -> {
+    group_by: nixpkgs_files.path
+    aggregate: file_count is count()
+    top: 10
+}
+
+query: top5_commiters_2022_dashboard is nixpkgs_commits -> {
+    where: year(author_time) = 2022
+    group_by: author.name
+    aggregate: commit_count is count()
+    top: 5
+
+    nest: commits_by_time_line_chart is {
+        group_by: author_time_month is author_time.month
+        aggregate: commit_count is count()
+    }
+
+    nest: top_10_files is {
+        group_by: nixpkgs_files.path
+        aggregate: file_count is count()
+        top: 10
+    }
+}
