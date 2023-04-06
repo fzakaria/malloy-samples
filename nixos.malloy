@@ -30,9 +30,15 @@ source: author_package is from(nixpkgs_commits -> {
         author_name is name
 }
 
+source: file_commits is from(nixpkgs_commits -> {
+    group_by: difference.old_path, author_time_month is author_time.month
+    aggregate: commit_count is count(distinct commit)
+})
+
 query: top10_commiters_dashboard is nixpkgs_commits -> {
     //TODO(fmzakari): this join_many shouldn't need to be here. File bug?
-    join_many: author_package on author_package.package = package
+    join_many: author_package on author_package.package = package,
+               file_commits on file_commits.old_path = difference.old_path
     
     group_by: author.name
     aggregate: commit_count is count(distinct commit)
@@ -47,12 +53,6 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
         group_by: difference.old_path
         aggregate: change_count is count(distinct commit)
         top: 10
-        nest: top_3_commiters is {
-          where: author.name != author_package.author_name
-          group_by: author_package.author_name
-          aggregate: change_count is author_package.commit_count.sum()
-          top: 3
-        }
     }
 
     nest: top_10_packages is {
