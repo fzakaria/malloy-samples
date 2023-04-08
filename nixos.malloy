@@ -8,6 +8,8 @@
  *         EXTRACT(YEAR FROM TIMESTAMP_SECONDS(author.time_sec)) >= 2019
  *
  * This is to save on some cost to avoid scanning the whole table.
+ * Feel free to request access
+ *
  */
 source: nixpkgs_commits is table('malloydev.github_nixpkgs_commits_from_2019') {
     where: 
@@ -21,24 +23,44 @@ source: nixpkgs_commits is table('malloydev.github_nixpkgs_commits_from_2019') {
        
 }
 
-source: author_package is from(nixpkgs_commits -> {
-    where: package != null
-    group_by: author.name, package
-    aggregate: commit_count is count(distinct commit)
-}) + {
-    dimension:
-        author_name is name
+/** Use this query to check how we are handling our package regular expression. */
+query: empty_package is nixpkgs_commits -> {
+    where: package = ''
+    project:
+        subject
+        package
+    limit: 100
 }
 
-source: file_commits is from(nixpkgs_commits -> {
-    group_by: difference.old_path, author_time_month is author_time.month
-    aggregate: commit_count is count(distinct commit)
-})
+/**
+ * For every package what are the authors who commit to it.
+ */
+query: package_author is nixpkgs_commits -> {
+    where: package != ''
+    group_by: package
+    nest: by_author is {
+        group_by: author_name is author.name
+        aggregate: commit_count is count(distinct commit)
+    }
+}
+
+/**
+ * For every file what are the commits by month to it.
+ */
+query: file_time is nixpkgs_commits -> {
+    // File paths can be returned as non empty string
+    where: trim(difference.old_path) != ''
+    group_by: difference.old_path
+    nest: by_time_line_chart is {
+        group_by: t is author_time.month
+        aggregate: c is count(distinct commit)
+    }
+}
 
 query: top10_commiters_dashboard is nixpkgs_commits -> {
     //TODO(fmzakari): this join_many shouldn't need to be here. File bug?
-    join_many: author_package on author_package.package = package,
-               file_commits on file_commits.old_path = difference.old_path
+    join_one: package_author is from(->package_author) with package
+    join_one: file_time is from(->file_time) with difference.old_path
     
     group_by: author.name
     aggregate: commit_count is count(distinct commit)
@@ -54,8 +76,8 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
         aggregate: change_count is count(distinct commit)
         top: 10
         nest: commits_by_time_line_chart is {
-            group_by: file_commits.author_time_month
-            aggregate: change_count is file_commits.commit_count.sum()
+            group_by: t is file_time.by_time_line_chart.t
+            aggregate: c is file_time.by_time_line_chart.c.sum()
         }
     }
 
@@ -66,9 +88,9 @@ query: top10_commiters_dashboard is nixpkgs_commits -> {
         top: 10
 
         nest: top_3_commiters is {
-          where: author.name != author_package.author_name
-          group_by: author_package.author_name
-          aggregate: change_count is author_package.commit_count.sum()
+          where: author.name != package_author.by_author.author_name
+          group_by: package_author.by_author.author_name
+          aggregate: change_count is package_author.by_author.commit_count.sum()
           top: 3
         }
     }
